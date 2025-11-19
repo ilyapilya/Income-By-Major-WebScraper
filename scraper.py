@@ -2,28 +2,33 @@ import time, json, re, requests
 from typing import Dict, List, Set, Tuple
 from bs4 import BeautifulSoup as bs
 
-BASE_URL = "https://www.bls.gov/ooh/home.htm"  # <- change this
+BASE_URL = "https://raw.githubusercontent.com/fivethirtyeight/data/master/college-majors/recent-grads.csv"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; CollegeIncomeScraper/1.0)"
 }
 
-# Fetches HTML content given page URL. Returns None on failure.
+# Fetches HTML content from URL
 def fetch_page_html(page: int) -> str | None:
-    url = BASE_URL.format(page=page)
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(BASE_URL, timeout=10)
         resp.raise_for_status()  # raises on 4xx/5xx
         return resp.text
     except requests.RequestException as e:
-        print(f"Unable to fetch page {page}: {e}")
+        print(f"Unable to fetch data: {e}")
         return None
 
+# Parses income string to integer from job string
 def parse_income_value(raw_str: str) -> int | None:
     if raw_str is None:
         return None
     
     # Removing whitespace, unwanted characters, and normalizing
     cleaned_str = raw_str.strip().lower().replace("$", "").replace(",", "")
+
+    # Handle ranges like "75,000 to 99,999" - extract the first number
+    if "to" in cleaned_str:
+        parts = cleaned_str.split("to")
+        cleaned_str = parts[0].strip()
 
     # Handle for "X k" or "Xk"
     match_k = re.match(r"^(\d+(?:\.\d+)?)\s*k$", cleaned_str)
@@ -33,38 +38,77 @@ def parse_income_value(raw_str: str) -> int | None:
     # Fallback: just digits
     digits = re.findall(r"\d+", cleaned_str)
     if digits:
-        return int("".join(digits))
+        return int(digits[0])  # Take first number only
 
     return None
 
-# Uses HTML content to extract Major / Income Data
-def parse_job_data(html : str) -> dict | None:
-    soup = bs(html, "html.parser")
-    jobs : List[Dict] = []
-
-    # Job Containers
-    job_elements = soup.find_all("div", class_="job-card")  # <- Change
+# Uses CSV content to extract Major / Income Data
+def parse_job_data_csv(csv_content : str) -> list[Dict]:
+    majors : List[Dict] = []
     
-    for elem in job_elements:
-        major = elem.find('h2', class_='job-title')  # Example selector
-        income = elem.find('span', class_='salary')  # Example selector
+    lines = csv_content.strip().split('\n')
+    if not lines:
+        return majors
+    
+    # Column indices based on FiveThirtyEight dataset:
+    # [2]: Major name
+    # [15]: Median salary
+    MAJOR_COL = 2
+    MEDIAN_COL = 15
+    
+    # Parse data rows (skip header at line 0)
+    for line in lines[1:]:
+        if not line.strip():
+            continue
         
-        if major and income:
-            major_text = major.get_text(strip=True)
-            income_value = parse_income_value(income.get_text(strip=True))
+        cols = line.split(',')
+        if len(cols) > MEDIAN_COL:
+            major = cols[MAJOR_COL].strip()
+            median_salary_str = cols[MEDIAN_COL].strip()
             
-            jobs.append({
-                'major': major_text,
-                'income': income_value
-            })
+            income_value = parse_income_value(median_salary_str)
+            
+            if major and income_value is not None:
+                majors.append({
+                    'major': major,
+                    'income': income_value
+                })
     
-    return jobs
+    return majors
+
+def save_to_json(jobs : List[Dict], filename: str = "jobs.json") -> None:
+    try:
+        with open(filename, 'w') as f:
+            # json.dump() saves jobs list to JSON file
+            json.dump(jobs, f, indent=2)
+        print(f"Successfully saved {len(jobs)} jobs to {filename}")
+    except IOError as e:
+        print(f"Error saving to file: {e}")
+
 
 if __name__ == "__main__":
+    print("Starting Major to Income Scraper...")
+    
+    # Step 1: Fetch HTML content as str
     html_content = fetch_page_html(1)
+
+    # Initializing jobs
+    jobs = None
+
+    # Step 2: Parse job data from HTML
     if html_content is not None:
-        jobs = parse_job_data(html_content)
-        for job in jobs:
-            print(job)
+        print(f"Successfully fetched {len(html_content)} characters of HTML")
+        jobs = parse_job_data_csv(html_content)
+        print(f"Found {len(jobs)} jobs")
+        
+        for i in range(max(len(jobs), 10)):
+            print(jobs[i])
     else:
         print("Failed to fetch page")
+
+    # Step 3: Save to JSON
+    if jobs:
+        print(f"Saving {len(jobs)} jobs to JSON file: jobs.json")
+        save_to_json(jobs, "jobs.json")
+
+    
